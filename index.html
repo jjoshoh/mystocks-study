@@ -97,6 +97,37 @@
   #msg { font-size:12px; color:var(--ink-3); margin-top:8px; min-height:15px; }
   .empty { text-align:center; color:var(--ink-3); font-size:13px; padding:20px 0; }
   .foot { font-size:11px; color:var(--ink-3); line-height:1.6; margin-top:18px; }
+  /* ---------- 종목 분석 ---------- */
+  .anlbtn { border:1px solid var(--ring); background:var(--surface-1); color:var(--accent);
+            border-radius:7px; padding:3px 10px; font-size:11.5px; cursor:pointer; margin-left:8px; }
+  .anlbtn:active { opacity:.6; }
+  .overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:50; }
+  .overlay.open { display:block; }
+  .sheet { height:100%; max-width:520px; margin:0 auto; background:var(--page); overflow-y:auto;
+           padding:14px 14px calc(30px + env(safe-area-inset-bottom)); }
+  .sh-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+  .sh-tick { font-size:20px; font-weight:700; }
+  .sh-name { font-size:12px; color:var(--ink-3); }
+  .anlsec { background:var(--surface-1); border:1px solid var(--ring); border-radius:12px;
+            padding:12px 14px; margin-bottom:10px; font-size:13px; }
+  .anlsec h4 { font-size:12.5px; color:var(--ink-2); margin-bottom:8px; }
+  .mgrid { display:grid; grid-template-columns:1fr 1fr; gap:7px 14px; }
+  .mrow { display:flex; justify-content:space-between; font-size:12.5px; }
+  .mrow .k { color:var(--ink-3); }
+  .mrow .v { font-weight:600; font-variant-numeric:tabular-nums; }
+  .band { position:relative; height:6px; border-radius:3px; background:var(--grid); margin:10px 2px 4px; }
+  .band .mk { position:absolute; top:-4px; width:3px; height:14px; border-radius:2px; background:var(--accent); }
+  .bandlbl { display:flex; justify-content:space-between; font-size:11px; color:var(--ink-3); margin-top:4px; }
+  .newsit { padding:8px 0; border-bottom:1px solid var(--grid); }
+  .newsit:last-child { border-bottom:none; padding-bottom:0; }
+  .newsit a { color:var(--ink-1); text-decoration:none; font-size:12.5px; line-height:1.4; }
+  .newsit .src { font-size:11px; color:var(--ink-3); margin-top:2px; }
+  .etbl { width:100%; border-collapse:collapse; font-size:12px; font-variant-numeric:tabular-nums; }
+  .etbl th { color:var(--ink-3); font-weight:400; text-align:right; padding:3px 0; }
+  .etbl th:first-child, .etbl td:first-child { text-align:left; }
+  .etbl td { text-align:right; padding:3px 0; border-top:1px solid var(--grid); }
+  .anlmsg { font-size:12.5px; color:var(--ink-3); line-height:1.55; }
+  .aitext { font-size:13px; line-height:1.65; color:var(--ink-1); white-space:normal; }
 </style>
 </head>
 <body>
@@ -137,7 +168,27 @@
     <input id="newtick" placeholder="티커 (예: NVDA)" autocomplete="off">
     <button class="btn" id="btn-add">추가</button>
   </div>
+  <p style="margin-top:14px"><b>AI 해설 연결 (선택)</b><br>
+  <a href="https://platform.claude.com/" target="_blank">Claude API</a> 키를 저장하면 종목 분석 화면에서
+  AI가 쓰는 한국어 해설을 볼 수 있습니다. 키는 이 기기에만 저장되며, 해설을 생성할 때마다 사용량만큼 요금이 부과됩니다.</p>
+  <div class="keyrow">
+    <input id="aikey" placeholder="Claude API 키 (sk-ant-…)" autocomplete="off">
+    <button class="btn" id="btn-saveaikey">저장</button>
+  </div>
   <div id="msg"></div>
+</div>
+
+<div class="overlay" id="anl-overlay">
+  <div class="sheet">
+    <div class="sh-head">
+      <div>
+        <div class="sh-tick" id="anl-tick"></div>
+        <div class="sh-name" id="anl-name"></div>
+      </div>
+      <button class="icobtn" id="anl-close">✕ 닫기</button>
+    </div>
+    <div id="anl-body"></div>
+  </div>
 </div>
 
 <div class="foot">
@@ -203,7 +254,10 @@ function render() {
       </div>
       <div class="srow">
         <span class="nm">${h.n||''}</span>
-        <span class="chg ${cls(chgPct)}">${fmtPct(chgPct)}</span>
+        <span style="display:flex;align-items:center">
+          <span class="chg ${cls(chgPct)}">${fmtPct(chgPct)}</span>
+          <button class="anlbtn">분석</button>
+        </span>
       </div>
       ${q>0 ? `<div class="srow2">
         <span class="hold">${q}주 · 평단 ${a>0?fmt$(a):'—'}</span>
@@ -218,6 +272,7 @@ function render() {
       if (e.target.closest('.editrow')) return;
       card.classList.toggle('editing');
     });
+    card.querySelector('.anlbtn').addEventListener('click', e => { e.stopPropagation(); openAnalysis(h); });
     card.querySelector('.in-q').addEventListener('input', e => { h.qty = parseFloat(e.target.value)||0; save(); refreshTotals(); });
     card.querySelector('.in-a').addEventListener('input', e => { h.avg = parseFloat(e.target.value)||0; save(); refreshTotals(); });
     card.querySelector('.del').addEventListener('click', e => {
@@ -298,11 +353,199 @@ async function refreshQuotes() {
   render();
 }
 
+// ---------- 종목 분석 ----------
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pick = (o, keys) => { if (!o) return null; for (const k of keys){ const v=o[k]; if (v!==undefined && v!==null && v!=='') return v; } return null; };
+const n1 = v => v==null ? '—' : (+v).toLocaleString('en-US',{maximumFractionDigits:1});
+const n2 = v => v==null ? '—' : (+v).toLocaleString('en-US',{maximumFractionDigits:2});
+const pct1 = v => v==null ? '—' : (+v).toFixed(1)+'%';
+
+async function fhGet(path, key){
+  try { const r = await fetch(`https://finnhub.io/api/v1${path}&token=${key}`);
+        if (!r.ok) return null; return await r.json(); }
+  catch(e){ return null; }
+}
+
+let anlData = null; // AI 해설에 전달할 데이터
+
+function openAnalysis(h){
+  document.getElementById('anl-tick').textContent = h.t;
+  document.getElementById('anl-name').textContent = h.n || '';
+  document.getElementById('anl-overlay').classList.add('open');
+  document.body.style.overflow = 'hidden';
+  loadAnalysis(h);
+}
+function closeAnalysis(){
+  document.getElementById('anl-overlay').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+async function loadAnalysis(h){
+  const body = document.getElementById('anl-body');
+  const key = store.get('pf_apikey');
+  anlData = null;
+  if (!key){
+    body.innerHTML = '<div class="anlsec anlmsg">재무·뉴스 데이터를 가져오려면 ⚙설정에서 무료 Finnhub API 키를 먼저 저장하세요.</div>';
+    return;
+  }
+  body.innerHTML = '<div class="anlsec anlmsg">데이터 불러오는 중…</div>';
+  const now = new Date(), from = new Date(now.getTime() - 7*864e5);
+  const d = x => x.toISOString().slice(0,10);
+  const t = encodeURIComponent(h.t);
+  const [quote, profile, metricR, news, earnings] = await Promise.all([
+    fhGet(`/quote?symbol=${t}`, key),
+    fhGet(`/stock/profile2?symbol=${t}`, key),
+    fhGet(`/stock/metric?symbol=${t}&metric=all`, key),
+    fhGet(`/company-news?symbol=${t}&from=${d(from)}&to=${d(now)}`, key),
+    fhGet(`/stock/earnings?symbol=${t}`, key),
+  ]);
+  const m = metricR && metricR.metric ? metricR.metric : null;
+  if (!quote && !profile && !m){
+    body.innerHTML = '<div class="anlsec anlmsg">데이터를 가져오지 못했습니다. 인터넷 연결과 Finnhub API 키를 확인해 주세요.</div>';
+    return;
+  }
+  const cur = (quote && quote.c) ? quote.c : h.p;
+  const pc  = (quote && quote.pc) ? quote.pc : h.pc;
+  const chg = pc ? (cur/pc-1)*100 : 0;
+
+  let html = `<div class="anlsec">
+    <div class="mrow"><span class="k">현재가</span><span class="v">${fmt$(cur)} <span class="${cls(chg)}">(${fmtPct(chg)})</span></span></div>`;
+  if (profile && profile.finnhubIndustry)
+    html += `<div class="mrow" style="margin-top:6px"><span class="k">업종</span><span class="v">${esc(profile.finnhubIndustry)}</span></div>`;
+  if (profile && profile.marketCapitalization)
+    html += `<div class="mrow" style="margin-top:6px"><span class="k">시가총액</span><span class="v">$${n1(profile.marketCapitalization/1000)}B</span></div>`;
+  html += '</div>';
+
+  const hi = m ? pick(m,['52WeekHigh']) : null, lo = m ? pick(m,['52WeekLow']) : null;
+  if (hi && lo && hi > lo){
+    const pos = Math.min(100, Math.max(0, (cur-lo)/(hi-lo)*100));
+    html += `<div class="anlsec"><h4>52주 가격 범위</h4>
+      <div class="band"><div class="mk" style="left:calc(${pos.toFixed(1)}% - 1px)"></div></div>
+      <div class="bandlbl"><span>${fmt$(lo)}</span><span>현재 위치 ${pos.toFixed(0)}%</span><span>${fmt$(hi)}</span></div></div>`;
+  }
+
+  if (m){
+    const rows = [
+      ['PER (TTM)', n1(pick(m,['peTTM','peBasicExclExtraTTM','peExclExtraTTM']))],
+      ['PSR (TTM)', n1(pick(m,['psTTM']))],
+      ['PBR', n1(pick(m,['pbAnnual','pbQuarterly']))],
+      ['ROE', pct1(pick(m,['roeTTM','roeRfy']))],
+      ['영업이익률', pct1(pick(m,['operatingMarginTTM','operatingMarginAnnual']))],
+      ['매출 성장(YoY)', pct1(pick(m,['revenueGrowthTTMYoy','revenueGrowthQuarterlyYoy']))],
+      ['베타', n2(pick(m,['beta']))],
+      ['배당수익률', pct1(pick(m,['dividendYieldIndicatedAnnual','currentDividendYieldTTM']))],
+    ].filter(r => r[1] !== '—');
+    if (rows.length)
+      html += `<div class="anlsec"><h4>재무 지표</h4><div class="mgrid">` +
+        rows.map(r=>`<div class="mrow"><span class="k">${r[0]}</span><span class="v">${r[1]}</span></div>`).join('') +
+        '</div></div>';
+  }
+
+  if (Array.isArray(earnings) && earnings.length){
+    html += `<div class="anlsec"><h4>분기 실적 (EPS)</h4><table class="etbl">
+      <tr><th>분기</th><th>실제</th><th>예상</th><th>서프라이즈</th></tr>` +
+      earnings.slice(0,4).map(e=>`<tr><td>${esc(e.period||'')}</td><td>${n2(e.actual)}</td><td>${n2(e.estimate)}</td>
+        <td class="${(e.surprisePercent||0)>=0?'pos':'neg'}">${e.surprisePercent==null?'—':fmtPct(e.surprisePercent)}</td></tr>`).join('') +
+      '</table></div>';
+  }
+
+  const newsItems = Array.isArray(news) ? news.filter(x=>x.headline).slice(0,6) : [];
+  if (newsItems.length){
+    html += `<div class="anlsec"><h4>최근 7일 뉴스</h4>` + newsItems.map(x=>{
+      const dt = new Date(x.datetime*1000).toLocaleDateString('ko-KR',{month:'numeric',day:'numeric'});
+      return `<div class="newsit"><a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.headline)}</a>
+        <div class="src">${esc(x.source||'')} · ${dt}</div></div>`;
+    }).join('') + '</div>';
+  }
+
+  anlData = {
+    ticker: h.t, name: (profile && profile.name) || h.n,
+    quote: quote ? {current:quote.c, prevClose:quote.pc, dayHigh:quote.h, dayLow:quote.l} : null,
+    profile: profile ? {industry:profile.finnhubIndustry, marketCapMillionUSD:profile.marketCapitalization} : null,
+    metrics: m ? {
+      per:pick(m,['peTTM','peBasicExclExtraTTM']), psr:pick(m,['psTTM']), pbr:pick(m,['pbAnnual']),
+      roePct:pick(m,['roeTTM']), operatingMarginPct:pick(m,['operatingMarginTTM']),
+      revenueGrowthYoyPct:pick(m,['revenueGrowthTTMYoy']), beta:pick(m,['beta']),
+      week52High:pick(m,['52WeekHigh']), week52Low:pick(m,['52WeekLow']),
+    } : null,
+    earningsEPS: Array.isArray(earnings) ? earnings.slice(0,4) : null,
+    recentNews: newsItems.map(x=>({date:new Date(x.datetime*1000).toISOString().slice(0,10),
+      headline:x.headline, summary:(x.summary||'').slice(0,300)})),
+  };
+
+  html += `<div class="anlsec"><h4>AI 해설</h4><div id="anl-ai">` +
+    (store.get('pf_aikey')
+      ? `<button class="btn" onclick="aiCommentary()">AI 해설 생성</button>
+         <div class="anlmsg" style="margin-top:8px">위 데이터를 Claude AI가 한국어로 요약·해설합니다. 생성할 때마다 소액의 API 요금이 발생합니다.</div>`
+      : `<div class="anlmsg">⚙설정에서 Claude API 키를 저장하면 AI 해설을 생성할 수 있습니다.</div>`) +
+    '</div></div>';
+  html += '<div class="anlmsg" style="padding:0 4px 4px">본 화면은 정보 제공 목적이며 투자 권유가 아닙니다. 데이터: Finnhub</div>';
+  body.innerHTML = html;
+}
+
+const AI_SYSTEM = `너는 미국주식 개인 투자 기록 앱의 종목분석 도우미다. 사용자가 JSON으로 제공하는 데이터(시세·재무지표·분기실적·최근 뉴스)만을 근거로 한국어 리포트를 작성한다.
+
+규칙:
+- 매수·매도·보유 등 투자 행동을 추천하거나 목표가를 제시하지 않는다. 데이터 요약과 객관적 해설만 한다.
+- 제공된 데이터에 없는 수치를 만들어내지 않는다. 데이터가 없는 항목은 언급을 생략한다.
+- 아래 네 섹션 형식으로, 각 섹션 2~4문장, 마크다운 없이 일반 텍스트로 쓴다.
+■ 핵심 요약
+■ 재무·밸류에이션
+■ 최근 뉴스 흐름
+■ 확인해볼 점
+- '확인해볼 점'은 투자 판단이 아니라 데이터에서 드러나는 리스크 요인이나 추가로 살펴볼 지표를 중립적으로 짚는다.`;
+
+async function aiCommentary(){
+  const key = store.get('pf_aikey');
+  const el = document.getElementById('anl-ai');
+  if (!key || !anlData) return;
+  el.innerHTML = '<div class="anlmsg">AI 해설 생성 중… (10~30초 정도 걸립니다)</div>';
+  try {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'server-side-fallback-2026-07-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: 'claude-opus-5',
+        max_tokens: 2500,
+        fallbacks: 'default',
+        output_config: {effort: 'low'},
+        system: AI_SYSTEM,
+        messages: [{role:'user', content:'다음 데이터를 바탕으로 리포트를 작성해줘.\n' + JSON.stringify(anlData)}],
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error((j && j.error && j.error.message) || ('HTTP ' + r.status));
+    if (j.stop_reason === 'refusal'){
+      el.innerHTML = '<div class="anlmsg">AI가 이 요청에 대한 해설 생성을 거절했습니다.</div>';
+      return;
+    }
+    const text = (j.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n').trim();
+    el.innerHTML = '<div class="aitext">' +
+      esc(text).replace(/^■ (.+)$/gm,'<b>■ $1</b>').replace(/\n/g,'<br>') + '</div>' +
+      '<div class="anlmsg" style="margin-top:8px">본 해설은 AI가 생성한 정보 요약이며 투자 권유가 아닙니다.</div>';
+  } catch(e){
+    el.innerHTML = `<div class="anlmsg" style="margin-bottom:8px">AI 해설 생성 실패: ${esc(e.message)}</div>
+      <button class="btn" onclick="aiCommentary()">다시 시도</button>`;
+  }
+}
+
 // ---------- 이벤트 ----------
+document.getElementById('anl-close').addEventListener('click', closeAnalysis);
+document.getElementById('btn-saveaikey').addEventListener('click', () => {
+  store.set('pf_aikey', document.getElementById('aikey').value.trim());
+  document.getElementById('msg').textContent = 'Claude API 키를 저장했습니다.';
+});
 document.getElementById('btn-refresh').addEventListener('click', refreshQuotes);
 document.getElementById('btn-settings').addEventListener('click', () => {
   const p = document.getElementById('settings'); p.classList.toggle('open');
   document.getElementById('apikey').value = store.get('pf_apikey') || '';
+  document.getElementById('aikey').value = store.get('pf_aikey') || '';
 });
 document.getElementById('btn-savekey').addEventListener('click', () => {
   store.set('pf_apikey', document.getElementById('apikey').value.trim());

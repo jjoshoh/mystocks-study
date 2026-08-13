@@ -13,22 +13,20 @@
 - `desktop.html` — 데스크톱용 대시보드 (참고용 이전 버전)
 
 ## 현재 상태 (2026-08-13 기준)
+- 프로젝트/저장소 이름: `mystocks-study` (사용자 요청으로 my-portfolio에서 변경)
+- 배포 완료: https://jjoshoh.github.io/mystocks-study/ (GitHub Pages, main 브랜치 루트)
+- GitHub 저장소: https://github.com/jjoshoh/mystocks-study (public, gh CLI 로그인 계정: jjoshoh)
+- 수정 후 main에 push하면 1~2분 내 폰 앱에 자동 반영됨
 - 보유종목 8개: CRDO, SNDK, MU, BE, ALAB, AMD, CRWD, GOOG
 - 시세는 2026-08-13 장중 스냅샷이 코드에 내장되어 있음 (`DEFAULTS` 배열)
 - 수량·평단가는 localStorage에 저장 (`pf_holdings` 키)
 - 실시간 시세: Finnhub API (사용자가 ⚙설정에서 키 입력 → `pf_apikey`에 저장)
-- 아직 GitHub에 올리지 않음 — 첫 작업이 배포임
-
-## 최우선 작업: GitHub Pages 배포
-1. 이 폴더를 git 저장소로 초기화
-2. GitHub에 public 저장소 `my-portfolio` 생성 후 push (gh CLI 사용, 없으면 설치 안내)
-3. GitHub Pages 활성화 (main 브랜치 루트)
-4. 배포 주소(https://<아이디>.github.io/my-portfolio/)를 사용자에게 알려주고,
-   폰 홈 화면에 추가하는 방법(iPhone: 공유→홈 화면에 추가)을 안내
+- AI 종목분석: 카드의 "분석" 버튼 → Finnhub 데이터 리포트(52주 범위·재무지표·실적·뉴스)
+  + Claude API 해설(선택, 키는 `pf_aikey`에 저장, 모델 claude-opus-5, 투자 추천 금지 프롬프트)
 
 ## 로드맵 (사용자와 합의된 순서)
 1. ~~포트폴리오 대시보드~~ (완료)
-2. AI 종목분석: 관심 종목의 재무·뉴스·기술적 지표를 종합한 분석 리포트 기능
+2. ~~AI 종목분석: 관심 종목의 재무·뉴스·기술적 지표를 종합한 분석 리포트 기능~~ (완료)
 3. 전략 백테스팅: 매매 전략을 과거 데이터로 검증 (vectorbt 등 참고)
 - 참고 오픈소스: OpenBB, virattt/ai-hedge-fund, vectorbt, Ghostfolio
 
