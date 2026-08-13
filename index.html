@@ -128,6 +128,19 @@
   .etbl td { text-align:right; padding:3px 0; border-top:1px solid var(--grid); }
   .anlmsg { font-size:12.5px; color:var(--ink-3); line-height:1.55; }
   .aitext { font-size:13px; line-height:1.65; color:var(--ink-1); white-space:normal; }
+  /* ---------- 백테스트 ---------- */
+  .btwide { width:100%; margin:0 0 14px; padding:11px; border:1px solid var(--ring); border-radius:12px;
+            background:var(--surface-1); color:var(--ink-1); font-size:13.5px; font-weight:600; cursor:pointer; }
+  .btwide:active { opacity:.6; }
+  .frow { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; font-size:13px; }
+  .frow label { color:var(--ink-2); white-space:nowrap; }
+  .frow select, .frow input { padding:8px 9px; border:1px solid var(--baseline); border-radius:8px;
+            background:var(--page); color:var(--ink-1); font-size:13.5px; }
+  .frow select { flex:1; min-width:0; }
+  .frow input { width:92px; text-align:right; font-variant-numeric:tabular-nums; }
+  #btchart { width:100%; height:190px; display:block; }
+  .btlegend { display:flex; gap:16px; font-size:11.5px; color:var(--ink-2); margin-top:6px; }
+  .btlegend .sw { display:inline-block; width:14px; height:3px; border-radius:2px; margin-right:5px; vertical-align:3px; }
 </style>
 </head>
 <body>
@@ -152,6 +165,8 @@
   <div class="alloclegend" id="alloclegend"></div>
 </div>
 
+<button class="btwide" id="btn-bt">🧪 전략 백테스트 — 과거 데이터로 매매 전략 검증</button>
+
 <h2>보유 종목 <span style="font-weight:400">· 카드를 누르면 수량 입력</span></h2>
 <div id="list"></div>
 
@@ -175,7 +190,45 @@
     <input id="aikey" placeholder="Claude API 키 (sk-ant-…)" autocomplete="off">
     <button class="btn" id="btn-saveaikey">저장</button>
   </div>
+  <p style="margin-top:14px"><b>백테스트 데이터 연결 (선택)</b><br>
+  <a href="https://twelvedata.com/" target="_blank">twelvedata.com</a>에 무료 가입하면 받는 API 키를 저장하면
+  전략 백테스트에서 과거 주가 데이터를 가져올 수 있습니다. (무료: 하루 800회)</p>
+  <div class="keyrow">
+    <input id="tdkey" placeholder="Twelve Data API 키" autocomplete="off">
+    <button class="btn" id="btn-savetdkey">저장</button>
+  </div>
   <div id="msg"></div>
+</div>
+
+<div class="overlay" id="bt-overlay">
+  <div class="sheet">
+    <div class="sh-head">
+      <div>
+        <div class="sh-tick">전략 백테스트</div>
+        <div class="sh-name">과거 데이터로 매매 전략 검증 · 수수료·세금 미반영</div>
+      </div>
+      <button class="icobtn" id="bt-close">✕ 닫기</button>
+    </div>
+    <div class="anlsec">
+      <div class="frow"><label>종목</label><select id="bt-tick"></select></div>
+      <div class="frow" id="bt-customrow" style="display:none"><label>티커 입력</label>
+        <input id="bt-custom" style="width:140px;text-align:left;text-transform:uppercase" placeholder="예: NVDA"></div>
+      <div class="frow"><label>기간</label><select id="bt-period">
+        <option value="250">최근 1년</option><option value="750" selected>최근 3년</option><option value="1250">최근 5년</option>
+      </select></div>
+      <div class="frow"><label>전략</label><select id="bt-strat">
+        <option value="bh">단순 보유 (매수 후 유지)</option>
+        <option value="ma" selected>이동평균 교차 (골든·데드크로스)</option>
+        <option value="rsi">RSI 과매도 매수·과매수 매도</option>
+        <option value="dca">매월 적립 매수 (DCA)</option>
+      </select></div>
+      <div id="bt-params"></div>
+      <div class="frow"><label>시작 자금</label><input id="bt-cap" inputmode="numeric" value="10000"></div>
+      <button class="btn" id="bt-run" style="width:100%">백테스트 실행</button>
+      <div class="anlmsg" id="bt-msg" style="margin-top:8px"></div>
+    </div>
+    <div id="bt-result"></div>
+  </div>
 </div>
 
 <div class="overlay" id="anl-overlay">
@@ -535,7 +588,194 @@ async function aiCommentary(){
   }
 }
 
+// ---------- 전략 백테스트 ----------
+const STRAT_NAMES = {bh:'단순 보유', ma:'이동평균 교차', rsi:'RSI', dca:'매월 적립 매수'};
+
+function smaSeries(c, n){
+  const s = new Array(c.length).fill(null); let sum = 0;
+  for (let i=0; i<c.length; i++){ sum += c[i]; if (i>=n) sum -= c[i-n]; if (i>=n-1) s[i] = sum/n; }
+  return s;
+}
+function rsiSeries(c, n){
+  const r = new Array(c.length).fill(null); let g=0, l=0;
+  for (let i=1; i<c.length; i++){
+    const d = c[i]-c[i-1];
+    if (i<=n){ g += Math.max(d,0); l += Math.max(-d,0);
+      if (i===n){ g/=n; l/=n; r[i] = l===0 ? 100 : 100-100/(1+g/l); } }
+    else { g=(g*(n-1)+Math.max(d,0))/n; l=(l*(n-1)+Math.max(-d,0))/n;
+      r[i] = l===0 ? 100 : 100-100/(1+g/l); }
+  }
+  return r;
+}
+function simulate(dates, closes, cap, sig){
+  let cash=cap, sh=0, lastBuy=null; const eq=[], trades=[];
+  for (let i=0; i<closes.length; i++){
+    const s = sig(i);
+    if (s==='buy' && sh===0){ sh=cash/closes[i]; cash=0; lastBuy=closes[i]; trades.push({d:dates[i], t:'매수', p:closes[i]}); }
+    else if (s==='sell' && sh>0){ cash=sh*closes[i]; sh=0; trades.push({d:dates[i], t:'매도', p:closes[i], win:closes[i]>lastBuy}); }
+    eq.push(cash + sh*closes[i]);
+  }
+  return {eq, trades};
+}
+function simulateDCA(dates, closes, cap){
+  const monthFirst = new Set(); let cur='';
+  dates.forEach((d,i)=>{ const m=d.slice(0,7); if (m!==cur){ monthFirst.add(i); cur=m; } });
+  const per = cap/monthFirst.size; let cash=cap, sh=0; const eq=[], trades=[];
+  for (let i=0; i<closes.length; i++){
+    if (monthFirst.has(i)){ const amt=Math.min(per,cash); sh+=amt/closes[i]; cash-=amt; trades.push({d:dates[i], t:'매수', p:closes[i]}); }
+    eq.push(cash + sh*closes[i]);
+  }
+  return {eq, trades};
+}
+function maxDrawdown(eq){ let peak=eq[0], m=0; for (const v of eq){ if (v>peak) peak=v; const dd=(peak-v)/peak; if (dd>m) m=dd; } return m*100; }
+
+function fillBtTickers(){
+  const sel = document.getElementById('bt-tick');
+  sel.innerHTML = holdings.map(h=>`<option value="${esc(h.t)}">${esc(h.t)}${h.n?' · '+esc(h.n):''}</option>`).join('') +
+    '<option value="_custom">직접 입력…</option>';
+}
+function renderBtParams(){
+  const s = document.getElementById('bt-strat').value, p = document.getElementById('bt-params');
+  if (s==='ma') p.innerHTML = `
+    <div class="frow"><label>단기 이동평균 (일)</label><input id="bt-ma-s" inputmode="numeric" value="20"></div>
+    <div class="frow"><label>장기 이동평균 (일)</label><input id="bt-ma-l" inputmode="numeric" value="60"></div>`;
+  else if (s==='rsi') p.innerHTML = `
+    <div class="frow"><label>RSI 기간 (일)</label><input id="bt-rsi-n" inputmode="numeric" value="14"></div>
+    <div class="frow"><label>매수 기준 (이하)</label><input id="bt-rsi-lo" inputmode="numeric" value="30"></div>
+    <div class="frow"><label>매도 기준 (이상)</label><input id="bt-rsi-hi" inputmode="numeric" value="70"></div>`;
+  else p.innerHTML = '';
+}
+const iv = (id, def) => { const v = parseFloat(document.getElementById(id)?.value); return (isFinite(v) && v>0) ? v : def; };
+
+async function runBacktest(){
+  const msg = document.getElementById('bt-msg'), out = document.getElementById('bt-result');
+  const key = store.get('pf_tdkey');
+  if (!key){
+    msg.innerHTML = '과거 주가 데이터를 가져오려면 ⚙설정에서 <a href="https://twelvedata.com/" target="_blank">Twelve Data</a> 무료 API 키를 먼저 저장하세요.';
+    return;
+  }
+  let tick = document.getElementById('bt-tick').value;
+  if (tick==='_custom') tick = document.getElementById('bt-custom').value.trim().toUpperCase();
+  if (!tick){ msg.textContent = '티커를 입력하세요.'; return; }
+  const size = document.getElementById('bt-period').value;
+  const strat = document.getElementById('bt-strat').value;
+  const cap = iv('bt-cap', 10000);
+  const btn = document.getElementById('bt-run');
+  btn.disabled = true; btn.textContent = '데이터 불러오는 중…'; msg.textContent = ''; out.innerHTML = '';
+  try {
+    const r = await fetch(`https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(tick)}&interval=1day&outputsize=${size}&adjust=splits&apikey=${key}`);
+    const j = await r.json();
+    if (j.status === 'error' || !Array.isArray(j.values)) throw new Error(j.message || '데이터 없음');
+    const rows = j.values.slice().reverse(); // 과거 → 최신
+    const dates = rows.map(v=>v.datetime), closes = rows.map(v=>+v.close);
+    if (closes.length < 70) throw new Error('데이터가 너무 적습니다 (' + closes.length + '일)');
+
+    let res, pname = STRAT_NAMES[strat];
+    if (strat==='bh') res = simulate(dates, closes, cap, i => i===0 ? 'buy' : null);
+    else if (strat==='ma'){
+      const ns = Math.round(iv('bt-ma-s',20)), nl = Math.round(iv('bt-ma-l',60));
+      if (ns >= nl) throw new Error('단기 이동평균은 장기보다 짧아야 합니다');
+      const sS = smaSeries(closes, ns), sL = smaSeries(closes, nl);
+      res = simulate(dates, closes, cap, i => {
+        if (i<1 || sS[i-1]==null || sL[i-1]==null) return null;
+        if (sS[i-1] <= sL[i-1] && sS[i] > sL[i]) return 'buy';
+        if (sS[i-1] >= sL[i-1] && sS[i] < sL[i]) return 'sell';
+        return null;
+      });
+      pname += ` (${ns}/${nl}일)`;
+    }
+    else if (strat==='rsi'){
+      const n = Math.round(iv('bt-rsi-n',14)), lo = iv('bt-rsi-lo',30), hi = iv('bt-rsi-hi',70);
+      const rs = rsiSeries(closes, n);
+      res = simulate(dates, closes, cap, i => {
+        if (rs[i]==null) return null;
+        if (rs[i] <= lo) return 'buy';
+        if (rs[i] >= hi) return 'sell';
+        return null;
+      });
+      pname += ` (${n}일, ${lo}/${hi})`;
+    }
+    else res = simulateDCA(dates, closes, cap);
+
+    const bench = simulate(dates, closes, cap, i => i===0 ? 'buy' : null);
+    const fin = res.eq[res.eq.length-1], bfin = bench.eq[bench.eq.length-1];
+    const days = (new Date(dates[dates.length-1]) - new Date(dates[0])) / 864e5;
+    const ret = (fin/cap-1)*100, bret = (bfin/cap-1)*100;
+    const cagr = (Math.pow(fin/cap, 365/days)-1)*100;
+    const mdd = maxDrawdown(res.eq);
+    const sells = res.trades.filter(t=>t.t==='매도');
+    const winRate = sells.length ? sells.filter(t=>t.win).length/sells.length*100 : null;
+
+    let html = `<div class="anlsec"><h4>결과 · ${esc(tick)} · ${esc(pname)} · ${dates[0]} ~ ${dates[dates.length-1]}</h4><div class="mgrid">
+      <div class="mrow"><span class="k">총수익률</span><span class="v ${cls(ret)}">${fmtPct(ret)}</span></div>
+      <div class="mrow"><span class="k">단순 보유였다면</span><span class="v ${cls(bret)}">${fmtPct(bret)}</span></div>
+      <div class="mrow"><span class="k">연평균 (CAGR)</span><span class="v ${cls(cagr)}">${fmtPct(cagr)}</span></div>
+      <div class="mrow"><span class="k">최대 낙폭 (MDD)</span><span class="v neg">−${mdd.toFixed(1)}%</span></div>
+      <div class="mrow"><span class="k">최종 평가액</span><span class="v">${fmt$(fin)}</span></div>
+      <div class="mrow"><span class="k">매매 횟수</span><span class="v">${res.trades.length}회${winRate!=null?` · 승률 ${winRate.toFixed(0)}%`:''}</span></div>
+    </div></div>`;
+
+    html += `<div class="anlsec"><h4>자산 곡선 (시작 자금 ${fmt$(cap)})</h4><canvas id="btchart"></canvas>
+      <div class="btlegend"><span><span class="sw" style="background:var(--accent)"></span>${esc(STRAT_NAMES[strat])}</span>
+      <span><span class="sw" style="background:var(--baseline)"></span>단순 보유</span></div></div>`;
+
+    if (res.trades.length && strat!=='dca'){
+      const shown = res.trades.slice(-10);
+      html += `<div class="anlsec"><h4>매매 내역${res.trades.length>10?` (최근 10건 / 총 ${res.trades.length}건)`:''}</h4>
+        <table class="etbl"><tr><th>날짜</th><th>구분</th><th>가격</th></tr>` +
+        shown.map(t=>`<tr><td>${t.d}</td><td>${t.t}</td><td>${fmt$(t.p)}</td></tr>`).join('') + '</table></div>';
+    }
+    html += '<div class="anlmsg" style="padding:0 4px 4px">과거 성과는 미래 수익을 보장하지 않습니다. 수수료·세금·슬리피지는 반영되지 않았으며, 본 화면은 정보 제공 목적으로 투자 권유가 아닙니다. 데이터: Twelve Data (액면분할 반영)</div>';
+    out.innerHTML = html;
+    drawBtChart(dates, res.eq, bench.eq);
+  } catch(e){
+    msg.textContent = '백테스트 실패: ' + e.message;
+  } finally {
+    btn.disabled = false; btn.textContent = '백테스트 실행';
+  }
+}
+
+function drawBtChart(dates, a, b){
+  const cv = document.getElementById('btchart'); if (!cv) return;
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W*dpr; cv.height = H*dpr;
+  const ctx = cv.getContext('2d'); ctx.scale(dpr, dpr);
+  let min = Infinity, max = -Infinity;
+  for (const arr of [a,b]) for (const v of arr){ if (v<min) min=v; if (v>max) max=v; }
+  const px = i => 4 + (W-8)*i/(a.length-1);
+  const py = v => 8 + (H-32)*(1-(v-min)/((max-min)||1));
+  const line = (arr, color, w) => { ctx.beginPath();
+    arr.forEach((v,i)=>{ i ? ctx.lineTo(px(i),py(v)) : ctx.moveTo(px(i),py(v)); });
+    ctx.strokeStyle = color; ctx.lineWidth = w; ctx.stroke(); };
+  line(b, cssv('--baseline'), 1.5);
+  line(a, cssv('--accent'), 2);
+  ctx.fillStyle = cssv('--ink-3'); ctx.font = '10px sans-serif';
+  ctx.fillText(dates[0], 4, H-6);
+  const t = dates[dates.length-1];
+  ctx.fillText(t, W-4-ctx.measureText(t).width, H-6);
+}
+
 // ---------- 이벤트 ----------
+document.getElementById('btn-bt').addEventListener('click', () => {
+  fillBtTickers(); renderBtParams();
+  document.getElementById('bt-result').innerHTML = '';
+  document.getElementById('bt-msg').textContent = '';
+  document.getElementById('bt-overlay').classList.add('open');
+  document.body.style.overflow = 'hidden';
+});
+document.getElementById('bt-close').addEventListener('click', () => {
+  document.getElementById('bt-overlay').classList.remove('open');
+  document.body.style.overflow = '';
+});
+document.getElementById('bt-tick').addEventListener('change', e => {
+  document.getElementById('bt-customrow').style.display = e.target.value==='_custom' ? 'flex' : 'none';
+});
+document.getElementById('bt-strat').addEventListener('change', renderBtParams);
+document.getElementById('bt-run').addEventListener('click', runBacktest);
+document.getElementById('btn-savetdkey').addEventListener('click', () => {
+  store.set('pf_tdkey', document.getElementById('tdkey').value.trim());
+  document.getElementById('msg').textContent = 'Twelve Data API 키를 저장했습니다.';
+});
 document.getElementById('anl-close').addEventListener('click', closeAnalysis);
 document.getElementById('btn-saveaikey').addEventListener('click', () => {
   store.set('pf_aikey', document.getElementById('aikey').value.trim());
@@ -546,6 +786,7 @@ document.getElementById('btn-settings').addEventListener('click', () => {
   const p = document.getElementById('settings'); p.classList.toggle('open');
   document.getElementById('apikey').value = store.get('pf_apikey') || '';
   document.getElementById('aikey').value = store.get('pf_aikey') || '';
+  document.getElementById('tdkey').value = store.get('pf_tdkey') || '';
 });
 document.getElementById('btn-savekey').addEventListener('click', () => {
   store.set('pf_apikey', document.getElementById('apikey').value.trim());
