@@ -660,7 +660,10 @@ async function openNews(){
   newsData = items.slice(0,12).map(x=>({
     time: new Date(x.datetime*1000).toISOString().slice(0,16).replace('T',' ') + ' (UTC)',
     headline: x.headline, summary: (x.summary||'').slice(0,300), source: x.source }));
-  let html = '';
+  let html = `<div class="anlsec">
+    <button class="btn" id="news-tr" onclick="translateNews()" style="width:100%">🇰🇷 제목 한국어 번역 (무료)</button>
+    <div class="anlmsg" style="margin-top:8px">무료 번역(MyMemory)이라 품질이 다소 거칠 수 있고, 하루 사용 한도가 있습니다.</div>
+  </div>`;
   if (store.get('pf_aikey'))
     html += `<div class="anlsec"><div id="news-ai">
       <button class="btn" onclick="aiNewsBrief()" style="width:100%">🤖 AI 한국어 브리핑 생성</button>
@@ -682,6 +685,30 @@ async function aiNewsBrief(){
     el.innerHTML = `<div class="anlmsg" style="margin-bottom:8px">AI 브리핑 생성 실패: ${esc(e.message)}</div>
       <button class="btn" onclick="aiNewsBrief()">다시 시도</button>`;
   }
+}
+
+async function translateNews(){
+  const btn = document.getElementById('news-tr');
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  const links = Array.from(document.querySelectorAll('#news-body .newsit a'));
+  let done = 0, fail = 0;
+  for (const a of links){
+    btn.textContent = `번역 중… ${done+1}/${links.length}`;
+    if (a.dataset.ko){ a.textContent = a.dataset.ko; done++; continue; }
+    try {
+      const r = await fetch('https://api.mymemory.translated.net/get?q=' +
+        encodeURIComponent(a.textContent.slice(0,480)) + '&langpair=en|ko');
+      const j = await r.json();
+      const t = j && j.responseData && j.responseData.translatedText;
+      if (r.ok && t && j.responseStatus == 200){
+        a.dataset.en = a.textContent; a.dataset.ko = t; a.textContent = t;
+        a.title = a.dataset.en;
+      } else fail++;
+    } catch(e){ fail++; }
+    done++;
+  }
+  btn.textContent = fail ? `번역 완료 · ${fail}개 실패 (무료 한도 초과일 수 있음)` : '✓ 번역 완료';
 }
 
 // ---------- 기기 간 데이터 옮기기 ----------
