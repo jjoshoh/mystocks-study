@@ -165,6 +165,7 @@
   <div class="alloclegend" id="alloclegend"></div>
 </div>
 
+<button class="btwide" id="btn-news" style="margin-bottom:8px">📰 미국 시장 뉴스</button>
 <button class="btwide" id="btn-bt">🧪 전략 백테스트 — 과거 데이터로 매매 전략 검증</button>
 
 <h2>보유 종목 <span style="font-weight:400">· 카드를 누르면 수량 입력</span></h2>
@@ -190,6 +191,10 @@
     <input id="aikey" placeholder="Claude API 키 (sk-ant-…)" autocomplete="off">
     <button class="btn" id="btn-saveaikey">저장</button>
   </div>
+  <p style="margin-top:14px"><b>기기 간 데이터 옮기기</b><br>
+  이 기기의 수량·평단가를 링크로 만들어 다른 기기로 보냅니다. 받은 기기에서 링크를 열면 데이터를 그대로 가져옵니다.
+  (API 키는 보안상 링크에 포함되지 않으니 각 기기에서 따로 입력하세요)</p>
+  <button class="btn" id="btn-sync" style="width:100%">📤 내보내기 링크 만들기</button>
   <p style="margin-top:14px"><b>백테스트 데이터 연결 (선택)</b><br>
   <a href="https://twelvedata.com/" target="_blank">twelvedata.com</a>에 무료 가입하면 받는 API 키를 저장하면
   전략 백테스트에서 과거 주가 데이터를 가져올 수 있습니다. (무료: 하루 800회)</p>
@@ -198,6 +203,19 @@
     <button class="btn" id="btn-savetdkey">저장</button>
   </div>
   <div id="msg"></div>
+</div>
+
+<div class="overlay" id="news-overlay">
+  <div class="sheet">
+    <div class="sh-head">
+      <div>
+        <div class="sh-tick">미국 시장 뉴스</div>
+        <div class="sh-name" id="news-sub"></div>
+      </div>
+      <button class="icobtn" id="news-close">✕ 닫기</button>
+    </div>
+    <div id="news-body"></div>
+  </div>
 </div>
 
 <div class="overlay" id="bt-overlay">
@@ -359,8 +377,9 @@ function render() {
       rows.map(r=>`<span><span class="dot" style="background:var(${COLORS[r.i%8]})"></span>${r.h.t}<span class="v"> ${(r.val/tot*100).toFixed(1)}%</span></span>`).join('');
   } else wrap.style.display='none';
 
-  document.getElementById('stamp').innerHTML = lastUpdate
-    ? `시세: <b>실시간 갱신</b> · ${lastUpdate}` : `시세: 저장된 스냅샷 · ${SNAPSHOT_TIME}`;
+  document.getElementById('stamp').innerHTML = (lastUpdate
+    ? `시세: <b>실시간 갱신</b> · ${lastUpdate}` : `시세: 저장된 스냅샷 · ${SNAPSHOT_TIME}`)
+    + ` · 미국장 <b>${usSession()}</b>`;
 }
 function refreshTotals(){ /* 입력 중 카드 재생성 없이 요약만 갱신 */
   let total=0,day=0,pl=0,cost=0,anyQty=false,anyAvg=false;
@@ -548,44 +567,149 @@ const AI_SYSTEM = `너는 미국주식 개인 투자 기록 앱의 종목분석 
 ■ 확인해볼 점
 - '확인해볼 점'은 투자 판단이 아니라 데이터에서 드러나는 리스크 요인이나 추가로 살펴볼 지표를 중립적으로 짚는다.`;
 
-async function aiCommentary(){
+async function claudeCall(system, userContent){
   const key = store.get('pf_aikey');
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': key,
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'server-side-fallback-2026-07-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-5',
+      max_tokens: 2500,
+      fallbacks: 'default',
+      output_config: {effort: 'low'},
+      system,
+      messages: [{role:'user', content: userContent}],
+    }),
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error((j && j.error && j.error.message) || ('HTTP ' + r.status));
+  if (j.stop_reason === 'refusal') throw new Error('AI가 이 요청을 거절했습니다');
+  return (j.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n').trim();
+}
+const aiHtml = text => '<div class="aitext">' +
+  esc(text).replace(/^■ (.+)$/gm,'<b>■ $1</b>').replace(/\n/g,'<br>') + '</div>' +
+  '<div class="anlmsg" style="margin-top:8px">본 해설은 AI가 생성한 정보 요약이며 투자 권유가 아닙니다.</div>';
+
+async function aiCommentary(){
   const el = document.getElementById('anl-ai');
-  if (!key || !anlData) return;
+  if (!store.get('pf_aikey') || !anlData) return;
   el.innerHTML = '<div class="anlmsg">AI 해설 생성 중… (10~30초 정도 걸립니다)</div>';
   try {
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': key,
-        'anthropic-version': '2023-06-01',
-        'anthropic-beta': 'server-side-fallback-2026-07-01',
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
-      body: JSON.stringify({
-        model: 'claude-opus-5',
-        max_tokens: 2500,
-        fallbacks: 'default',
-        output_config: {effort: 'low'},
-        system: AI_SYSTEM,
-        messages: [{role:'user', content:'다음 데이터를 바탕으로 리포트를 작성해줘.\n' + JSON.stringify(anlData)}],
-      }),
-    });
-    const j = await r.json();
-    if (!r.ok) throw new Error((j && j.error && j.error.message) || ('HTTP ' + r.status));
-    if (j.stop_reason === 'refusal'){
-      el.innerHTML = '<div class="anlmsg">AI가 이 요청에 대한 해설 생성을 거절했습니다.</div>';
-      return;
-    }
-    const text = (j.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n').trim();
-    el.innerHTML = '<div class="aitext">' +
-      esc(text).replace(/^■ (.+)$/gm,'<b>■ $1</b>').replace(/\n/g,'<br>') + '</div>' +
-      '<div class="anlmsg" style="margin-top:8px">본 해설은 AI가 생성한 정보 요약이며 투자 권유가 아닙니다.</div>';
+    el.innerHTML = aiHtml(await claudeCall(AI_SYSTEM, '다음 데이터를 바탕으로 리포트를 작성해줘.\n' + JSON.stringify(anlData)));
   } catch(e){
     el.innerHTML = `<div class="anlmsg" style="margin-bottom:8px">AI 해설 생성 실패: ${esc(e.message)}</div>
       <button class="btn" onclick="aiCommentary()">다시 시도</button>`;
   }
+}
+
+// ---------- 미국장 상태 ----------
+function usSession(){
+  const parts = new Intl.DateTimeFormat('en-US', {timeZone:'America/New_York', hour12:false,
+    weekday:'short', hour:'2-digit', minute:'2-digit'}).formatToParts(new Date());
+  const get = t => parts.find(p=>p.type===t).value;
+  const wd = get('weekday');
+  if (wd==='Sat' || wd==='Sun') return '휴장';
+  const t = (+get('hour')%24)*60 + +get('minute');
+  if (t>=240 && t<570)  return '프리마켓';
+  if (t>=570 && t<960)  return '정규장';
+  if (t>=960 && t<1200) return '애프터마켓';
+  return '장 마감';
+}
+
+// ---------- 시장 뉴스 ----------
+const AI_NEWS_SYSTEM = `너는 미국주식 시장 뉴스 브리핑 도우미다. 사용자가 JSON으로 제공하는 최신 시장 뉴스 목록(영문)만을 근거로 한국어 브리핑을 작성한다.
+
+규칙:
+- 제공된 뉴스에 있는 내용만 다룬다. 없는 사실을 추가하지 않는다.
+- 매수·매도 등 투자 행동을 추천하지 않는다. 시장 상황 요약과 객관적 정리만 한다.
+- 마크다운 없이 일반 텍스트로, 아래 형식으로 쓴다.
+■ 오늘의 핵심 (2~3문장)
+■ 주요 뉴스 (항목별 한 줄 요약 4~6개)
+■ 체크포인트 (앞으로 지켜볼 일정·변수 1~2문장, 투자 판단 아님)`;
+
+let newsData = null;
+function relTime(ts){
+  const s = Math.floor(Date.now()/1000 - ts);
+  if (s < 3600)  return Math.max(1, Math.floor(s/60)) + '분 전';
+  if (s < 86400) return Math.floor(s/3600) + '시간 전';
+  return Math.floor(s/86400) + '일 전';
+}
+async function openNews(){
+  document.getElementById('news-overlay').classList.add('open');
+  document.body.style.overflow = 'hidden';
+  document.getElementById('news-sub').textContent = '미국장 ' + usSession() + ' · 최신 헤드라인';
+  const body = document.getElementById('news-body');
+  const key = store.get('pf_apikey');
+  if (!key){
+    body.innerHTML = '<div class="anlsec anlmsg">뉴스를 가져오려면 ⚙설정에서 무료 Finnhub API 키를 먼저 저장하세요.</div>';
+    return;
+  }
+  body.innerHTML = '<div class="anlsec anlmsg">뉴스 불러오는 중…</div>';
+  const j = await fhGet('/news?category=general', key);
+  const items = Array.isArray(j) ? j.filter(x=>x.headline).slice(0,20) : [];
+  if (!items.length){
+    body.innerHTML = '<div class="anlsec anlmsg">뉴스를 가져오지 못했습니다. 인터넷 연결과 API 키를 확인해 주세요.</div>';
+    return;
+  }
+  newsData = items.slice(0,12).map(x=>({
+    time: new Date(x.datetime*1000).toISOString().slice(0,16).replace('T',' ') + ' (UTC)',
+    headline: x.headline, summary: (x.summary||'').slice(0,300), source: x.source }));
+  let html = '';
+  if (store.get('pf_aikey'))
+    html += `<div class="anlsec"><div id="news-ai">
+      <button class="btn" onclick="aiNewsBrief()" style="width:100%">🤖 AI 한국어 브리핑 생성</button>
+      <div class="anlmsg" style="margin-top:8px">아래 뉴스들을 Claude AI가 한국어로 요약합니다. 생성할 때마다 소액의 API 요금이 발생합니다.</div>
+    </div></div>`;
+  html += '<div class="anlsec">' + items.map(x=>`<div class="newsit">
+    <a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.headline)}</a>
+    <div class="src">${esc(x.source||'')} · ${relTime(x.datetime)}</div></div>`).join('') + '</div>';
+  html += '<div class="anlmsg" style="padding:0 4px 4px">본 화면은 정보 제공 목적이며 투자 권유가 아닙니다. 데이터: Finnhub</div>';
+  body.innerHTML = html;
+}
+async function aiNewsBrief(){
+  const el = document.getElementById('news-ai');
+  if (!store.get('pf_aikey') || !newsData) return;
+  el.innerHTML = '<div class="anlmsg">AI 브리핑 생성 중… (10~30초 정도 걸립니다)</div>';
+  try {
+    el.innerHTML = aiHtml(await claudeCall(AI_NEWS_SYSTEM, '다음 뉴스 목록으로 브리핑을 작성해줘.\n' + JSON.stringify(newsData)));
+  } catch(e){
+    el.innerHTML = `<div class="anlmsg" style="margin-bottom:8px">AI 브리핑 생성 실패: ${esc(e.message)}</div>
+      <button class="btn" onclick="aiNewsBrief()">다시 시도</button>`;
+  }
+}
+
+// ---------- 기기 간 데이터 옮기기 ----------
+const b64e = s => btoa(String.fromCharCode(...new TextEncoder().encode(s)));
+const b64d = s => new TextDecoder().decode(Uint8Array.from(atob(s), c => c.charCodeAt(0)));
+async function shareSync(){
+  const data = holdings.map(h=>({t:h.t, n:h.n, p:h.p, pc:h.pc, qty:h.qty, avg:h.avg}));
+  const url = location.origin + location.pathname + '#sync=' + encodeURIComponent(b64e(JSON.stringify(data)));
+  const msg = document.getElementById('msg');
+  if (navigator.share){
+    try { await navigator.share({title:'내 포트폴리오 데이터', url}); return; } catch(e){ if (e.name==='AbortError') return; }
+  }
+  try { await navigator.clipboard.writeText(url); msg.textContent = '링크를 복사했습니다. 다른 기기에서 열면 데이터를 가져옵니다.'; }
+  catch(e){ prompt('아래 링크를 복사해 다른 기기에서 여세요:', url); }
+}
+function importSync(){
+  const mFrag = location.hash.match(/#sync=(.+)/);
+  if (!mFrag) return;
+  try {
+    const data = JSON.parse(b64d(decodeURIComponent(mFrag[1])));
+    if (Array.isArray(data) && data.length &&
+        confirm(`다른 기기에서 보낸 포트폴리오 데이터(종목 ${data.length}개)를 가져올까요?\n이 기기의 기존 수량·평단가를 덮어씁니다.`)){
+      holdings = data.map(d=>({t:String(d.t||''), n:d.n||'', p:+d.p||0, pc:+d.pc||0, qty:+d.qty||0, avg:+d.avg||0}))
+                     .filter(d=>d.t);
+      save();
+    }
+  } catch(e){ alert('데이터를 가져오지 못했습니다. 링크가 잘렸는지 확인해 주세요.'); }
+  history.replaceState(null, '', location.pathname + location.search);
 }
 
 // ---------- 전략 백테스트 ----------
@@ -777,6 +901,12 @@ document.getElementById('btn-savetdkey').addEventListener('click', () => {
   document.getElementById('msg').textContent = 'Twelve Data API 키를 저장했습니다.';
 });
 document.getElementById('anl-close').addEventListener('click', closeAnalysis);
+document.getElementById('btn-news').addEventListener('click', openNews);
+document.getElementById('news-close').addEventListener('click', () => {
+  document.getElementById('news-overlay').classList.remove('open');
+  document.body.style.overflow = '';
+});
+document.getElementById('btn-sync').addEventListener('click', shareSync);
 document.getElementById('btn-saveaikey').addEventListener('click', () => {
   store.set('pf_aikey', document.getElementById('aikey').value.trim());
   document.getElementById('msg').textContent = 'Claude API 키를 저장했습니다.';
@@ -802,6 +932,7 @@ document.getElementById('btn-add').addEventListener('click', () => {
   document.getElementById('msg').textContent = t+' 추가됨 — "시세갱신"을 눌러 가격을 받아오세요.';
 });
 
+importSync();
 render();
 </script>
 </body>
